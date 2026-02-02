@@ -70,6 +70,28 @@ bool IsValuatorMaskSet(const XIValuatorState& state, int axis) {
   return (maskByte & (1 << (axis % 8))) != 0;
 }
 
+bool TryWheelDeltaForButton(uint32_t button, int32_t& deltaX, int32_t& deltaY) {
+  constexpr int32_t kWheelStep = 1;
+  deltaX = 0;
+  deltaY = 0;
+  switch (button) {
+    case 4:
+      deltaY = kWheelStep;
+      return true;
+    case 5:
+      deltaY = -kWheelStep;
+      return true;
+    case 6:
+      deltaX = kWheelStep;
+      return true;
+    case 7:
+      deltaX = -kWheelStep;
+      return true;
+    default:
+      return false;
+  }
+}
+
 } // namespace
 
 LinuxPlatformHook::LinuxPlatformHook(EventCallback callback)
@@ -102,6 +124,8 @@ void LinuxPlatformHook::ThreadLoop() {
   XISetMask(maskBytes, XI_KeyRelease);
   XISetMask(maskBytes, XI_RawKeyPress);
   XISetMask(maskBytes, XI_RawKeyRelease);
+  XISetMask(maskBytes, XI_RawButtonPress);
+  XISetMask(maskBytes, XI_RawButtonRelease);
   XISetMask(maskBytes, XI_ButtonPress);
   XISetMask(maskBytes, XI_ButtonRelease);
   XISetMask(maskBytes, XI_Motion);
@@ -113,6 +137,7 @@ void LinuxPlatformHook::ThreadLoop() {
   XISelectEvents(display_, root, &mask, 1);
 
   rawKeyboardSeen_.store(false, std::memory_order_release);
+  rawPointerSeen_.store(false, std::memory_order_release);
 
   XEvent event;
   while (running_) {
@@ -146,26 +171,40 @@ void LinuxPlatformHook::ThreadLoop() {
       case XI_RawKeyPress:
       case XI_RawKeyRelease: {
         modifiers = QueryKeyboardModifiers(display_);
-        ProcessRawKeyEvent(reinterpret_cast<XIRawEvent*>(event.xcookie.data),
-                           inputEvent,
-                           evtype);
-        shouldDispatch = !inputEvent.type.empty();
+        shouldDispatch = ProcessRawKeyEvent(reinterpret_cast<XIRawEvent*>(event.xcookie.data),
+                                            inputEvent,
+                                            evtype);
         if (shouldDispatch) {
           rawKeyboardSeen_.store(true, std::memory_order_release);
         }
         break;
       }
+      case XI_RawButtonPress:
+      case XI_RawButtonRelease: {
+        modifiers = QueryKeyboardModifiers(display_);
+        shouldDispatch = ProcessRawButtonEvent(reinterpret_cast<XIRawEvent*>(event.xcookie.data),
+                                               inputEvent,
+                                               evtype);
+        if (shouldDispatch) {
+          rawPointerSeen_.store(true, std::memory_order_release);
+        }
+        break;
+      }
       case XI_RawMotion: {
         modifiers = QueryKeyboardModifiers(display_);
-        ProcessRawMotionEvent(reinterpret_cast<XIRawEvent*>(event.xcookie.data),
-                              inputEvent);
-        shouldDispatch = !inputEvent.type.empty();
+        shouldDispatch = ProcessRawMotionEvent(reinterpret_cast<XIRawEvent*>(event.xcookie.data),
+                                               inputEvent);
+        if (shouldDispatch) {
+          rawPointerSeen_.store(true, std::memory_order_release);
+        }
         break;
       }
       default: {
         auto* devEvent = reinterpret_cast<XIDeviceEvent*>(event.xcookie.data);
+        bool skipKeys = rawKeyboardSeen_.load(std::memory_order_acquire);
+        bool skipPointers = rawPointerSeen_.load(std::memory_order_acquire);
         modifiers = BuildModifiersFromState(devEvent->mods);
-        ProcessDeviceEvent(devEvent, inputEvent);
+        ProcessDeviceEvent(devEvent, inputEvent, skipKeys, skipPointers);
         shouldDispatch = !inputEvent.type.empty();
         break;
       }
@@ -186,7 +225,10 @@ void LinuxPlatformHook::ThreadLoop() {
   }
 }
 
-void LinuxPlatformHook::ProcessDeviceEvent(XIDeviceEvent* event, InputEvent& inputEvent) {
+void LinuxPlatformHook::ProcessDeviceEvent(XIDeviceEvent* event,
+                                           InputEvent& inputEvent,
+                                           bool skipKeyboardEvents,
+                                           bool skipPointerEvents) {
   if (!event) {
     inputEvent.type.clear();
     return;
@@ -194,7 +236,7 @@ void LinuxPlatformHook::ProcessDeviceEvent(XIDeviceEvent* event, InputEvent& inp
 
   switch (event->evtype) {
     case XI_KeyPress:
-      if (rawKeyboardSeen_.load(std::memory_order_acquire)) {
+      if (skipKeyboardEvents) {
         inputEvent.type.clear();
         return;
       }
@@ -203,7 +245,7 @@ void LinuxPlatformHook::ProcessDeviceEvent(XIDeviceEvent* event, InputEvent& inp
       inputEvent.scancode = event->detail;
       break;
     case XI_KeyRelease:
-      if (rawKeyboardSeen_.load(std::memory_order_acquire)) {
+      if (skipKeyboardEvents) {
         inputEvent.type.clear();
         return;
       }
@@ -212,14 +254,26 @@ void LinuxPlatformHook::ProcessDeviceEvent(XIDeviceEvent* event, InputEvent& inp
       inputEvent.scancode = event->detail;
       break;
     case XI_ButtonPress:
+      if (skipPointerEvents) {
+        inputEvent.type.clear();
+        return;
+      }
       inputEvent.type = "mousedown";
-      inputEvent.button = event->detail;
+      inputEvent.button = static_cast<uint32_t>(event->detail > 0 ? event->detail - 1 : 0);
       break;
     case XI_ButtonRelease:
+      if (skipPointerEvents) {
+        inputEvent.type.clear();
+        return;
+      }
       inputEvent.type = "mouseup";
-      inputEvent.button = event->detail;
+      inputEvent.button = static_cast<uint32_t>(event->detail > 0 ? event->detail - 1 : 0);
       break;
     case XI_Motion:
+      if (skipPointerEvents) {
+        inputEvent.type.clear();
+        return;
+      }
       inputEvent.type = "mousemove";
       inputEvent.x = static_cast<int32_t>(event->event_x);
       inputEvent.y = static_cast<int32_t>(event->event_y);
@@ -230,28 +284,59 @@ void LinuxPlatformHook::ProcessDeviceEvent(XIDeviceEvent* event, InputEvent& inp
   }
 }
 
-void LinuxPlatformHook::ProcessRawKeyEvent(XIRawEvent* event,
+bool LinuxPlatformHook::ProcessRawKeyEvent(XIRawEvent* event,
                                            InputEvent& inputEvent,
                                            int evtype) {
   if (!event) {
-    return;
+    return false;
   }
   inputEvent.keycode = event->detail;
   inputEvent.scancode = event->detail;
   inputEvent.type = (evtype == XI_RawKeyPress) ? "keydown" : "keyup";
+  return true;
 }
 
-void LinuxPlatformHook::ProcessRawMotionEvent(XIRawEvent* event,
+bool LinuxPlatformHook::ProcessRawButtonEvent(XIRawEvent* event,
+                                              InputEvent& inputEvent,
+                                              int evtype) {
+  if (!event) {
+    return false;
+  }
+  uint32_t detail = event->detail;
+  if (detail >= 1 && detail <= 3) {
+    inputEvent.type = (evtype == XI_RawButtonPress) ? "mousedown" : "mouseup";
+    inputEvent.button = detail - 1;
+    return true;
+  }
+
+  int32_t deltaX = 0;
+  int32_t deltaY = 0;
+  if (TryWheelDeltaForButton(detail, deltaX, deltaY)) {
+    inputEvent.type = "wheel";
+    if (deltaX) {
+      inputEvent.deltaX = deltaX;
+    }
+    if (deltaY) {
+      inputEvent.deltaY = deltaY;
+    }
+    return true;
+  }
+
+  inputEvent.type.clear();
+  return false;
+}
+
+bool LinuxPlatformHook::ProcessRawMotionEvent(XIRawEvent* event,
                                               InputEvent& inputEvent) {
   if (!event || event->valuators.mask_len == 0 || !event->raw_values) {
     inputEvent.type.clear();
-    return;
+    return false;
   }
 
   int axisCount = event->valuators.mask_len * 8;
   if (axisCount <= 0) {
     inputEvent.type.clear();
-    return;
+    return false;
   }
 
   double deltaX = 0.0;
@@ -279,7 +364,7 @@ void LinuxPlatformHook::ProcessRawMotionEvent(XIRawEvent* event,
 
   if (!hasDeltaX && !hasDeltaY) {
     inputEvent.type.clear();
-    return;
+    return false;
   }
 
   inputEvent.type = "mousemove";
@@ -289,6 +374,7 @@ void LinuxPlatformHook::ProcessRawMotionEvent(XIRawEvent* event,
   if (hasDeltaY) {
     inputEvent.deltaY = static_cast<int32_t>(deltaY);
   }
+  return true;
 }
 
 bool LinuxPlatformHook::Start() {
