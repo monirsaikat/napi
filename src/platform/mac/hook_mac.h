@@ -13,7 +13,7 @@ namespace mac {
 
 class MacPlatformHook : public PlatformHook {
  public:
-  explicit MacPlatformHook(EventCallback callback);
+  explicit MacPlatformHook(PlatformHook::EventCallback callback);
   ~MacPlatformHook() override;
 
   bool Start() override;

@@ -81,7 +81,7 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
 
 }  // namespace
 
-MacPlatformHook::MacPlatformHook(EventCallback callback)
+MacPlatformHook::MacPlatformHook(PlatformHook::EventCallback callback)
     : PlatformHook(std::move(callback)) {}
 
 MacPlatformHook::~MacPlatformHook() {
