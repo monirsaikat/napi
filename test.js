@@ -1,6 +1,6 @@
 const inputhook = require('.');
 
-const durationMs = 10000*10000;
+const durationMs = 600000;
 let stopTimer;
 
 function stopHook(source) {
