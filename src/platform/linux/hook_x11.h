@@ -22,9 +22,12 @@ class LinuxPlatformHook : public PlatformHook {
 
  private:
   void ThreadLoop();
-  void ProcessEvent(XIDeviceEvent* event, InputEvent& inputEvent);
+  void ProcessDeviceEvent(XIDeviceEvent* event, InputEvent& inputEvent);
+  void ProcessRawKeyEvent(XIRawEvent* event, InputEvent& inputEvent, int evtype);
+  void ProcessRawMotionEvent(XIRawEvent* event, InputEvent& inputEvent);
 
   std::atomic<bool> running_{false};
+  std::atomic<bool> rawKeyboardSeen_{false};
   std::thread workerThread_;
   Display* display_{nullptr};
   int xiOpcode_{0};
