@@ -1,0 +1,17 @@
+{
+  "name": "inputhook",
+  "version": "1.0.0",
+  "description": "Cross-platform Node.js native addon for global input events",
+  "main": "index.js",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "install": "node-gyp rebuild"
+  },
+  "gypfile": true,
+  "dependencies": {
+    "node-addon-api": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
