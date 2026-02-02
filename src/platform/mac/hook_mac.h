@@ -3,6 +3,9 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <atomic>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <thread>
 
 #include "../../common/emitter.h"
@@ -30,6 +33,10 @@ class MacPlatformHook : public PlatformHook {
   std::thread runLoopThread_;
   CFMachPortRef eventTap_{nullptr};
   CFRunLoopRef runLoop_{nullptr};
+  std::mutex startPromiseMutex_;
+  std::shared_ptr<std::promise<bool>> startPromise_;
+
+  void NotifyStartResult(bool success);
 };
 
 } // namespace mac

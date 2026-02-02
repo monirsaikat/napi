@@ -88,6 +88,17 @@ MacPlatformHook::~MacPlatformHook() {
   Stop();
 }
 
+void MacPlatformHook::NotifyStartResult(bool success) {
+  std::shared_ptr<std::promise<bool>> promise;
+  {
+    std::lock_guard<std::mutex> lock(startPromiseMutex_);
+    promise = std::move(startPromise_);
+  }
+  if (promise) {
+    promise->set_value(success);
+  }
+}
+
 CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
                                            CGEventType type,
                                            CGEventRef event,
@@ -133,9 +144,12 @@ void MacPlatformHook::RunLoopThread() {
                                EventCallback,
                                &context);
   if (!eventTap_) {
+    NotifyStartResult(false);
     running_ = false;
     return;
   }
+
+  NotifyStartResult(true);
 
   runLoop_ = CFRunLoopGetCurrent();
   CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(nullptr, eventTap_, 0);
@@ -162,8 +176,31 @@ bool MacPlatformHook::Start() {
     return false;
   }
   running_ = true;
+
+  auto promise = std::make_shared<std::promise<bool>>();
+  auto future = promise->get_future();
+  {
+    std::lock_guard<std::mutex> lock(startPromiseMutex_);
+    startPromise_ = promise;
+  }
+
   runLoopThread_ = std::thread(&MacPlatformHook::RunLoopThread, this);
-  return true;
+
+  bool started = false;
+  try {
+    started = future.get();
+  } catch (const std::future_error&) {
+    started = false;
+  }
+
+  if (!started) {
+    running_ = false;
+    if (runLoopThread_.joinable()) {
+      runLoopThread_.join();
+    }
+  }
+
+  return started;
 }
 
 void MacPlatformHook::Stop() {
