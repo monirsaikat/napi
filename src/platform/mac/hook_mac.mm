@@ -186,12 +186,7 @@ bool MacPlatformHook::Start() {
 
   runLoopThread_ = std::thread(&MacPlatformHook::RunLoopThread, this);
 
-  bool started = false;
-  try {
-    started = future.get();
-  } catch (const std::future_error&) {
-    started = false;
-  }
+  bool started = future.get();
 
   if (!started) {
     running_ = false;
