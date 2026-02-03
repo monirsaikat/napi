@@ -248,9 +248,8 @@ CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
 
   if (type == kCGEventFlagsChanged) {
     CGEventFlags flags = CGEventGetFlags(event);
-    CGEventFlags mask = ModifierFlagMask();
-    CGEventFlags changed = (flags ^ self->lastFlags_) & mask;
-    self->lastFlags_ = (self->lastFlags_ & ~mask) | (flags & mask);
+    CGEventFlags changed = flags ^ self->lastFlags_;
+    self->lastFlags_ = flags;
     if (changed == 0) {
       return event;
     }
@@ -258,6 +257,8 @@ CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
     InputEvent modifierEvent;
     modifierEvent.time = CurrentTimeMs();
     modifierEvent.modifiers = ModifiersFromFlags(flags);
+    modifierEvent.keycode = static_cast<uint32_t>(
+        CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
     modifierEvent.type = (flags & changed) ? "keydown" : "keyup";
     self->Dispatch(std::move(modifierEvent));
     return event;
