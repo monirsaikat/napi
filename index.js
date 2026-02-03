@@ -20,5 +20,7 @@ const binding = require(resolveBinding());
 module.exports = {
   start: binding.start,
   stop: binding.stop,
-  onEvent: binding.onEvent
+  onEvent: binding.onEvent,
+  getFailureReason: binding.getFailureReason,
+  getLastError: binding.getLastError
 };

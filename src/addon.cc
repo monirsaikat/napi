@@ -127,6 +127,15 @@ Napi::Value GetFailureReason(const Napi::CallbackInfo& info) {
   return Napi::String::New(env, reason);
 }
 
+Napi::Value GetLastError(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string error;
+  if (g_emitter) {
+    error = g_emitter->GetLastError();
+  }
+  return Napi::String::New(env, error);
+}
+
 void Cleanup() {
   if (g_emitter) {
     g_emitter->Stop();
@@ -141,6 +150,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("stop", Napi::Function::New(env, Stop));
   exports.Set("onEvent", Napi::Function::New(env, OnEvent));
   exports.Set("getFailureReason", Napi::Function::New(env, GetFailureReason));
+  exports.Set("getLastError", Napi::Function::New(env, GetLastError));
   env.AddCleanupHook(Cleanup);
   return exports;
 }

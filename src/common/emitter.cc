@@ -22,6 +22,10 @@ std::string PlatformHook::GetFailureReason() const {
   return {};
 }
 
+std::string PlatformHook::GetLastError() const {
+  return {};
+}
+
 void PlatformHook::Dispatch(InputEvent event) {
   if (callback_) {
     callback_(std::move(event));
@@ -56,6 +60,10 @@ void InputEmitter::Stop() {
 
 std::string InputEmitter::GetFailureReason() const {
   return platformHook_ ? platformHook_->GetFailureReason() : std::string();
+}
+
+std::string InputEmitter::GetLastError() const {
+  return platformHook_ ? platformHook_->GetLastError() : std::string();
 }
 
 } // namespace inputhook

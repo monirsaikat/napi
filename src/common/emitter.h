@@ -23,6 +23,7 @@ class InputEmitter {
   bool Start();
   void Stop();
   std::string GetFailureReason() const;
+  std::string GetLastError() const;
 
  private:
   std::unique_ptr<PlatformHook> platformHook_;
@@ -41,6 +42,7 @@ class PlatformHook {
   virtual bool Start() = 0;
   virtual void Stop() = 0;
   virtual std::string GetFailureReason() const;
+  virtual std::string GetLastError() const;
 
 protected:
   void Dispatch(InputEvent event);

@@ -4,6 +4,9 @@
 #import <Foundation/Foundation.h>
 
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 
 namespace inputhook {
@@ -11,9 +14,41 @@ namespace platform {
 namespace mac {
 
 namespace {
+constexpr int64_t kWatchdogIntervalMs = 120000;
+constexpr int64_t kInitialNoEventMs = 30000;
+constexpr int64_t kMinRecreateIntervalMs = 60000;
+
 double CurrentTimeMs() {
   using namespace std::chrono;
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+int64_t NowSteadyMs() {
+  using namespace std::chrono;
+  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+bool DebugEnabled() {
+  static std::atomic<int> cached{-1};
+  int value = cached.load(std::memory_order_acquire);
+  if (value != -1) {
+    return value == 1;
+  }
+  const char* env = std::getenv("DEBUG_HOOK");
+  bool enabled = env && *env && std::string(env) != "0";
+  cached.store(enabled ? 1 : 0, std::memory_order_release);
+  return enabled;
+}
+
+void DebugLog(const char* fmt, ...) {
+  if (!DebugEnabled()) {
+    return;
+  }
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(stderr, fmt, args);
+  std::fprintf(stderr, "\n");
+  va_end(args);
 }
 
 InputModifiers CurrentModifiers() {
@@ -135,11 +170,15 @@ CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
 
   if (type == kCGEventTapDisabledByTimeout ||
       type == kCGEventTapDisabledByUserInput) {
+    DebugLog("inputhook: event tap disabled (%d); re-enabling", static_cast<int>(type));
     if (self->eventTap_) {
       CGEventTapEnable(self->eventTap_, true);
     }
     return event;
   }
+
+  self->lastEventMs_.store(NowSteadyMs(), std::memory_order_release);
+  self->eventSeen_.store(true, std::memory_order_release);
 
   auto builtEvent = BuildEvent(type, event);
   if (builtEvent) {
@@ -154,6 +193,7 @@ bool MacPlatformHook::CreateEventTap(CGEventTapLocation location,
     return true;
   }
 
+  DebugLog("inputhook: attempting event tap at location %d", static_cast<int>(location));
   CFMachPortContext context = {};
   context.info = this;
   CFMachPortRef tap = CGEventTapCreate(location,
@@ -163,16 +203,65 @@ bool MacPlatformHook::CreateEventTap(CGEventTapLocation location,
                                        EventCallback,
                                        &context);
   if (!tap) {
+    DebugLog("inputhook: CGEventTapCreate failed for location %d", static_cast<int>(location));
     return false;
   }
 
   eventTap_ = tap;
   runLoopSource_ = CFMachPortCreateRunLoopSource(nullptr, eventTap_, 0);
   if (!runLoopSource_) {
+    DebugLog("inputhook: failed to create run loop source");
     CFMachPortInvalidate(eventTap_);
     CFRelease(eventTap_);
     eventTap_ = nullptr;
     return false;
+  }
+
+  DebugLog("inputhook: event tap created at location %d", static_cast<int>(location));
+  return true;
+}
+
+bool MacPlatformHook::CreateEventTapSequence(CGEventMask mask) {
+  if (CreateEventTap(kCGSessionEventTap, mask)) {
+    return true;
+  }
+  if (CreateEventTap(kCGAnnotatedSessionEventTap, mask)) {
+    return true;
+  }
+  return CreateEventTap(kCGHIDEventTap, mask);
+}
+
+void MacPlatformHook::TeardownEventTap() {
+  if (runLoopSource_) {
+    if (runLoop_) {
+      CFRunLoopRemoveSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
+    }
+    CFRelease(runLoopSource_);
+    runLoopSource_ = nullptr;
+  }
+  if (eventTap_) {
+    CGEventTapEnable(eventTap_, false);
+    CFMachPortInvalidate(eventTap_);
+    CFRelease(eventTap_);
+    eventTap_ = nullptr;
+  }
+}
+
+bool MacPlatformHook::RecreateEventTap(const char* reason) {
+  DebugLog("inputhook: recreating event tap (%s)", reason ? reason : "unknown");
+  TeardownEventTap();
+
+  CGEventMask mask = BuildEventMask();
+  if (!CreateEventTapSequence(mask)) {
+    SetLastError("Failed to recreate CGEventTap");
+    return false;
+  }
+
+  if (runLoop_ && runLoopSource_) {
+    CFRunLoopAddSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
+  }
+  if (eventTap_) {
+    CGEventTapEnable(eventTap_, true);
   }
 
   return true;
@@ -182,10 +271,13 @@ bool MacPlatformHook::EnsurePermissions() {
   if (@available(macOS 10.15, *)) {
     if (!CGPreflightListenEventAccess()) {
       CGRequestListenEventAccess();
-      SetFailureReason("Input Monitoring permission required for " +
-                       BuildProcessPath() +
-                       ". Enable it in System Settings > Privacy & Security > "
-                       "Input Monitoring and restart the binary.");
+      std::string message = "Input Monitoring permission required for " +
+                            BuildProcessPath() +
+                            ". Enable it in System Settings > Privacy & Security > "
+                            "Input Monitoring and restart the binary.";
+      SetFailureReason(message);
+      SetLastError(message);
+      DebugLog("inputhook: permission preflight failed (Input Monitoring)");
       return false;
     }
     return true;
@@ -204,9 +296,12 @@ bool MacPlatformHook::EnsurePermissions() {
     CFRelease(options);
   }
   if (!trusted) {
-    SetFailureReason("Accessibility permission required for " +
-                     BuildProcessPath() +
-                     ". Grant it under Privacy & Security > Accessibility.");
+    std::string message = "Accessibility permission required for " +
+                          BuildProcessPath() +
+                          ". Grant it under Privacy & Security > Accessibility.";
+    SetFailureReason(message);
+    SetLastError(message);
+    DebugLog("inputhook: permission preflight failed (Accessibility)");
     return false;
   }
 
@@ -214,13 +309,15 @@ bool MacPlatformHook::EnsurePermissions() {
 }
 
 void MacPlatformHook::RunLoopThread() {
+  runLoop_ = CFRunLoopGetCurrent();
   CGEventMask mask = BuildEventMask();
 
-  if (!CreateEventTap(kCGSessionEventTap, mask) &&
-      !CreateEventTap(kCGHIDEventTap, mask)) {
-    SetFailureReason("Unable to create a CGEventTap; ensure Input Monitoring "
-                     "or Accessibility permissions are granted for " +
-                     BuildProcessPath() + ".");
+  if (!CreateEventTapSequence(mask)) {
+    std::string message = "Unable to create a CGEventTap; ensure Input Monitoring "
+                          "or Accessibility permissions are granted for " +
+                          BuildProcessPath() + ".";
+    SetFailureReason(message);
+    SetLastError(message);
     running_ = false;
     NotifyStartResult(false);
     return;
@@ -229,7 +326,6 @@ void MacPlatformHook::RunLoopThread() {
   SetFailureReason("");
   NotifyStartResult(true);
 
-  runLoop_ = CFRunLoopGetCurrent();
   if (runLoopSource_) {
     CFRunLoopAddSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
   }
@@ -237,22 +333,31 @@ void MacPlatformHook::RunLoopThread() {
     CGEventTapEnable(eventTap_, true);
   }
 
+  lastRecreateMs_.store(NowSteadyMs(), std::memory_order_release);
+
   while (running_) {
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
+
+    int64_t now = NowSteadyMs();
+    int64_t lastEvent = lastEventMs_.load(std::memory_order_acquire);
+    int64_t lastRecreate = lastRecreateMs_.load(std::memory_order_acquire);
+    int64_t sinceEvent = now - lastEvent;
+    int64_t sinceRecreate = now - lastRecreate;
+    bool seen = eventSeen_.load(std::memory_order_acquire);
+
+    if (sinceRecreate >= kMinRecreateIntervalMs) {
+      if (!seen && sinceEvent >= kInitialNoEventMs) {
+        lastRecreateMs_.store(now, std::memory_order_release);
+        RecreateEventTap("no events after start");
+      } else if (seen && sinceEvent >= kWatchdogIntervalMs) {
+        lastRecreateMs_.store(now, std::memory_order_release);
+        RecreateEventTap("no events watchdog");
+      }
+    }
   }
 
+  TeardownEventTap();
   runLoop_ = nullptr;
-  if (runLoopSource_) {
-    CFRunLoopRemoveSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
-    CFRelease(runLoopSource_);
-    runLoopSource_ = nullptr;
-  }
-  if (eventTap_) {
-    CGEventTapEnable(eventTap_, false);
-    CFMachPortInvalidate(eventTap_);
-    CFRelease(eventTap_);
-    eventTap_ = nullptr;
-  }
 }
 
 bool MacPlatformHook::Start() {
@@ -261,11 +366,18 @@ bool MacPlatformHook::Start() {
   }
 
   SetFailureReason("");
+  SetLastError("");
   if (!EnsurePermissions()) {
     return false;
   }
 
+  int64_t now = NowSteadyMs();
+  lastEventMs_.store(now, std::memory_order_release);
+  lastRecreateMs_.store(now, std::memory_order_release);
+  eventSeen_.store(false, std::memory_order_release);
+
   running_ = true;
+  DebugLog("inputhook: starting mac event tap thread");
 
   auto promise = std::make_shared<std::promise<bool>>();
   auto future = promise->get_future();
@@ -280,6 +392,7 @@ bool MacPlatformHook::Start() {
 
   if (!started) {
     running_ = false;
+    DebugLog("inputhook: start failed");
     if (runLoopThread_.joinable()) {
       runLoopThread_.join();
     }
@@ -293,6 +406,7 @@ void MacPlatformHook::Stop() {
     return;
   }
   running_ = false;
+  DebugLog("inputhook: stopping mac event tap thread");
   if (eventTap_) {
     CGEventTapEnable(eventTap_, false);
   }
@@ -309,9 +423,19 @@ std::string MacPlatformHook::GetFailureReason() const {
   return failureReason_;
 }
 
+std::string MacPlatformHook::GetLastError() const {
+  std::lock_guard<std::mutex> lock(lastErrorMutex_);
+  return lastError_;
+}
+
 void MacPlatformHook::SetFailureReason(std::string reason) {
   std::lock_guard<std::mutex> lock(failureMutex_);
   failureReason_ = std::move(reason);
+}
+
+void MacPlatformHook::SetLastError(std::string reason) {
+  std::lock_guard<std::mutex> lock(lastErrorMutex_);
+  lastError_ = std::move(reason);
 }
 
 }  // namespace mac
