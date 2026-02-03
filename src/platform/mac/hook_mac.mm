@@ -133,6 +133,14 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
   return event;
 }
 
+CGEventFlags ModifierFlagMask() {
+  return kCGEventFlagMaskShift |
+         kCGEventFlagMaskControl |
+         kCGEventFlagMaskAlternate |
+         kCGEventFlagMaskCommand |
+         kCGEventFlagMaskAlphaShift;
+}
+
 std::string BuildProcessPath() {
   uint32_t size = 0;
   if (_NSGetExecutablePath(nullptr, &size) != -1 || size == 0) {
@@ -442,6 +450,7 @@ bool MacPlatformHook::Start() {
     return false;
   }
 
+  lastFlags_ = CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState);
   int64_t now = NowSteadyMs();
   lastEventMs_.store(now, std::memory_order_release);
   lastRecreateMs_.store(now, std::memory_order_release);
