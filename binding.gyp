@@ -35,7 +35,8 @@
             "OTHER_LDFLAGS": [
               "-framework", "ApplicationServices",
               "-framework", "CoreFoundation",
-              "-framework", "CoreGraphics"
+              "-framework", "CoreGraphics",
+              "-framework", "Cocoa"
             ],
             "OTHER_CFLAGS": ["-std=c++17", "-fobjc-arc"],
             "OTHER_CPLUSPLUSFLAGS": ["-std=c++17"]

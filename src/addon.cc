@@ -1,5 +1,6 @@
 #include <atomic>
 #include <memory>
+#include <string>
 
 #include <napi.h>
 
@@ -117,6 +118,15 @@ Napi::Value OnEvent(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+Napi::Value GetFailureReason(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string reason;
+  if (g_emitter) {
+    reason = g_emitter->GetFailureReason();
+  }
+  return Napi::String::New(env, reason);
+}
+
 void Cleanup() {
   if (g_emitter) {
     g_emitter->Stop();
@@ -130,6 +140,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("start", Napi::Function::New(env, Start));
   exports.Set("stop", Napi::Function::New(env, Stop));
   exports.Set("onEvent", Napi::Function::New(env, OnEvent));
+  exports.Set("getFailureReason", Napi::Function::New(env, GetFailureReason));
   env.AddCleanupHook(Cleanup);
   return exports;
 }
