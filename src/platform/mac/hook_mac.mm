@@ -54,9 +54,8 @@ void DebugLog(const char* fmt, ...) {
   va_end(args);
 }
 
-InputModifiers CurrentModifiers() {
+InputModifiers ModifiersFromFlags(CGEventFlags flags) {
   InputModifiers mods;
-  CGEventFlags flags = CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
   mods.shift = (flags & kCGEventFlagMaskShift) != 0;
   mods.ctrl = (flags & kCGEventFlagMaskControl) != 0;
   mods.alt = (flags & kCGEventFlagMaskAlternate) != 0;
@@ -67,10 +66,7 @@ InputModifiers CurrentModifiers() {
 std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
   InputEvent event;
   event.time = CurrentTimeMs();
-  event.modifiers = CurrentModifiers();
-  CGPoint location = CGEventGetLocation(eventRef);
-  event.x = static_cast<int32_t>(location.x);
-  event.y = static_cast<int32_t>(location.y);
+  event.modifiers = ModifiersFromFlags(CGEventGetFlags(eventRef));
 
   switch (type) {
     case kCGEventKeyDown:
@@ -88,11 +84,21 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
     case kCGEventLeftMouseDragged:
     case kCGEventRightMouseDragged:
     case kCGEventOtherMouseDragged:
+      {
+        CGPoint location = CGEventGetLocation(eventRef);
+        event.x = static_cast<int32_t>(location.x);
+        event.y = static_cast<int32_t>(location.y);
+      }
       event.type = "mousemove";
       break;
     case kCGEventLeftMouseDown:
     case kCGEventRightMouseDown:
     case kCGEventOtherMouseDown:
+      {
+        CGPoint location = CGEventGetLocation(eventRef);
+        event.x = static_cast<int32_t>(location.x);
+        event.y = static_cast<int32_t>(location.y);
+      }
       event.type = "mousedown";
       event.button = static_cast<uint32_t>(
           CGEventGetIntegerValueField(eventRef, kCGMouseEventButtonNumber));
@@ -100,11 +106,21 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
     case kCGEventLeftMouseUp:
     case kCGEventRightMouseUp:
     case kCGEventOtherMouseUp:
+      {
+        CGPoint location = CGEventGetLocation(eventRef);
+        event.x = static_cast<int32_t>(location.x);
+        event.y = static_cast<int32_t>(location.y);
+      }
       event.type = "mouseup";
       event.button = static_cast<uint32_t>(
           CGEventGetIntegerValueField(eventRef, kCGMouseEventButtonNumber));
       break;
     case kCGEventScrollWheel:
+      {
+        CGPoint location = CGEventGetLocation(eventRef);
+        event.x = static_cast<int32_t>(location.x);
+        event.y = static_cast<int32_t>(location.y);
+      }
       event.type = "wheel";
       event.deltaX = static_cast<int32_t>(
           CGEventGetIntegerValueField(eventRef, kCGScrollWheelEventDeltaAxis2));
