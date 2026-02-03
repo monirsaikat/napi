@@ -156,6 +156,7 @@ std::string BuildProcessPath() {
 CGEventMask BuildEventMask() {
   return CGEventMaskBit(kCGEventKeyDown) |
          CGEventMaskBit(kCGEventKeyUp) |
+         CGEventMaskBit(kCGEventFlagsChanged) |
          CGEventMaskBit(kCGEventMouseMoved) |
          CGEventMaskBit(kCGEventLeftMouseDown) |
          CGEventMaskBit(kCGEventLeftMouseUp) |
@@ -164,6 +165,33 @@ CGEventMask BuildEventMask() {
          CGEventMaskBit(kCGEventOtherMouseDown) |
          CGEventMaskBit(kCGEventOtherMouseUp) |
          CGEventMaskBit(kCGEventScrollWheel);
+}
+
+bool CheckAccessibilityPermission(const std::string& processPath,
+                                  std::string* failureMessage) {
+  const void* keys[] = { kAXTrustedCheckOptionPrompt };
+  const void* values[] = { kCFBooleanTrue };
+  CFDictionaryRef options = CFDictionaryCreate(kCFAllocatorDefault,
+                                               keys,
+                                               values,
+                                               1,
+                                               &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+  bool trusted = AXIsProcessTrustedWithOptions(options);
+  if (options) {
+    CFRelease(options);
+  }
+  if (!trusted) {
+    std::string message = "Accessibility permission required for " +
+                          (processPath.empty() ? BuildProcessPath() : processPath) +
+                          ". Grant it under Privacy & Security > Accessibility.";
+    if (failureMessage) {
+      *failureMessage = message;
+    }
+    DebugLog("inputhook: permission preflight failed (Accessibility)");
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -300,6 +328,13 @@ bool MacPlatformHook::RecreateEventTap(const char* reason) {
 
 bool MacPlatformHook::EnsurePermissions() {
   if (@available(macOS 10.15, *)) {
+    std::string accessibilityFailure;
+    if (!CheckAccessibilityPermission(processPath_, &accessibilityFailure)) {
+      SetFailureReason(accessibilityFailure);
+      SetLastError(accessibilityFailure);
+      return false;
+    }
+
     if (!CGPreflightListenEventAccess()) {
       CGRequestListenEventAccess();
       std::string message = "Input Monitoring permission required for " +
@@ -314,25 +349,10 @@ bool MacPlatformHook::EnsurePermissions() {
     return true;
   }
 
-  const void* keys[] = { kAXTrustedCheckOptionPrompt };
-  const void* values[] = { kCFBooleanTrue };
-  CFDictionaryRef options = CFDictionaryCreate(kCFAllocatorDefault,
-                                               keys,
-                                               values,
-                                               1,
-                                               &kCFTypeDictionaryKeyCallBacks,
-                                               &kCFTypeDictionaryValueCallBacks);
-  bool trusted = AXIsProcessTrustedWithOptions(options);
-  if (options) {
-    CFRelease(options);
-  }
-  if (!trusted) {
-    std::string message = "Accessibility permission required for " +
-                          (processPath_.empty() ? BuildProcessPath() : processPath_) +
-                          ". Grant it under Privacy & Security > Accessibility.";
-    SetFailureReason(message);
-    SetLastError(message);
-    DebugLog("inputhook: permission preflight failed (Accessibility)");
+  std::string accessibilityFailure;
+  if (!CheckAccessibilityPermission(processPath_, &accessibilityFailure)) {
+    SetFailureReason(accessibilityFailure);
+    SetLastError(accessibilityFailure);
     return false;
   }
 
