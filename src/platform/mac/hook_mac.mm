@@ -1,6 +1,7 @@
 #import "hook_mac.h"
 
 #import <ApplicationServices/ApplicationServices.h>
+#import <Foundation/Foundation.h>
 
 #include <chrono>
 #include <optional>
@@ -79,6 +80,30 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
   return event;
 }
 
+std::string BuildProcessPath() {
+  NSURL* executableURL = [[NSProcessInfo processInfo] executableURL];
+  if (executableURL) {
+    const char* path = executableURL.fileSystemRepresentation;
+    if (path) {
+      return std::string(path);
+    }
+  }
+  return "this process";
+}
+
+CGEventMask BuildEventMask() {
+  return CGEventMaskBit(kCGEventKeyDown) |
+         CGEventMaskBit(kCGEventKeyUp) |
+         CGEventMaskBit(kCGEventMouseMoved) |
+         CGEventMaskBit(kCGEventLeftMouseDown) |
+         CGEventMaskBit(kCGEventLeftMouseUp) |
+         CGEventMaskBit(kCGEventRightMouseDown) |
+         CGEventMaskBit(kCGEventRightMouseUp) |
+         CGEventMaskBit(kCGEventOtherMouseDown) |
+         CGEventMaskBit(kCGEventOtherMouseUp) |
+         CGEventMaskBit(kCGEventScrollWheel);
+}
+
 }  // namespace
 
 MacPlatformHook::MacPlatformHook(PlatformHook::EventCallback callback)
@@ -123,48 +148,107 @@ CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
   return event;
 }
 
-void MacPlatformHook::RunLoopThread() {
-  CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) |
-                     CGEventMaskBit(kCGEventKeyUp) |
-                     CGEventMaskBit(kCGEventMouseMoved) |
-                     CGEventMaskBit(kCGEventLeftMouseDown) |
-                     CGEventMaskBit(kCGEventLeftMouseUp) |
-                     CGEventMaskBit(kCGEventRightMouseDown) |
-                     CGEventMaskBit(kCGEventRightMouseUp) |
-                     CGEventMaskBit(kCGEventOtherMouseDown) |
-                     CGEventMaskBit(kCGEventOtherMouseUp) |
-                     CGEventMaskBit(kCGEventScrollWheel);
+bool MacPlatformHook::CreateEventTap(CGEventTapLocation location,
+                                     CGEventMask mask) {
+  if (eventTap_) {
+    return true;
+  }
 
   CFMachPortContext context = {};
   context.info = this;
-  eventTap_ = CGEventTapCreate(kCGHIDEventTap,
-                               kCGHeadInsertEventTap,
-                               kCGEventTapOptionListenOnly,
-                               mask,
-                               EventCallback,
-                               &context);
-  if (!eventTap_) {
-    NotifyStartResult(false);
+  CFMachPortRef tap = CGEventTapCreate(location,
+                                       kCGHeadInsertEventTap,
+                                       kCGEventTapOptionListenOnly,
+                                       mask,
+                                       EventCallback,
+                                       &context);
+  if (!tap) {
+    return false;
+  }
+
+  eventTap_ = tap;
+  runLoopSource_ = CFMachPortCreateRunLoopSource(nullptr, eventTap_, 0);
+  if (!runLoopSource_) {
+    CFMachPortInvalidate(eventTap_);
+    CFRelease(eventTap_);
+    eventTap_ = nullptr;
+    return false;
+  }
+
+  return true;
+}
+
+bool MacPlatformHook::EnsurePermissions() {
+  if (@available(macOS 10.15, *)) {
+    if (!CGPreflightListenEventAccess()) {
+      CGRequestListenEventAccess();
+      SetFailureReason("Input Monitoring permission required for " +
+                       BuildProcessPath() +
+                       ". Enable it in System Settings > Privacy & Security > "
+                       "Input Monitoring and restart the binary.");
+      return false;
+    }
+    return true;
+  }
+
+  const void* keys[] = { kAXTrustedCheckOptionPrompt };
+  const void* values[] = { kCFBooleanTrue };
+  CFDictionaryRef options = CFDictionaryCreate(kCFAllocatorDefault,
+                                               keys,
+                                               values,
+                                               1,
+                                               &kCFTypeDictionaryKeyCallBacks,
+                                               &kCFTypeDictionaryValueCallBacks);
+  bool trusted = AXIsProcessTrustedWithOptions(options);
+  if (options) {
+    CFRelease(options);
+  }
+  if (!trusted) {
+    SetFailureReason("Accessibility permission required for " +
+                     BuildProcessPath() +
+                     ". Grant it under Privacy & Security > Accessibility.");
+    return false;
+  }
+
+  return true;
+}
+
+void MacPlatformHook::RunLoopThread() {
+  CGEventMask mask = BuildEventMask();
+
+  if (!CreateEventTap(kCGSessionEventTap, mask) &&
+      !CreateEventTap(kCGHIDEventTap, mask)) {
+    SetFailureReason("Unable to create a CGEventTap; ensure Input Monitoring "
+                     "or Accessibility permissions are granted for " +
+                     BuildProcessPath() + ".");
     running_ = false;
+    NotifyStartResult(false);
     return;
   }
 
+  SetFailureReason("");
   NotifyStartResult(true);
 
   runLoop_ = CFRunLoopGetCurrent();
-  CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(nullptr, eventTap_, 0);
-  CFRunLoopAddSource(runLoop_, source, kCFRunLoopCommonModes);
-  CGEventTapEnable(eventTap_, true);
+  if (runLoopSource_) {
+    CFRunLoopAddSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
+  }
+  if (eventTap_) {
+    CGEventTapEnable(eventTap_, true);
+  }
 
   while (running_) {
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
   }
 
-  if (source) {
-    CFRunLoopRemoveSource(runLoop_, source, kCFRunLoopCommonModes);
-    CFRelease(source);
+  runLoop_ = nullptr;
+  if (runLoopSource_) {
+    CFRunLoopRemoveSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
+    CFRelease(runLoopSource_);
+    runLoopSource_ = nullptr;
   }
   if (eventTap_) {
+    CGEventTapEnable(eventTap_, false);
     CFMachPortInvalidate(eventTap_);
     CFRelease(eventTap_);
     eventTap_ = nullptr;
@@ -175,6 +259,12 @@ bool MacPlatformHook::Start() {
   if (running_) {
     return false;
   }
+
+  SetFailureReason("");
+  if (!EnsurePermissions()) {
+    return false;
+  }
+
   running_ = true;
 
   auto promise = std::make_shared<std::promise<bool>>();
@@ -212,6 +302,16 @@ void MacPlatformHook::Stop() {
   if (runLoopThread_.joinable()) {
     runLoopThread_.join();
   }
+}
+
+std::string MacPlatformHook::GetFailureReason() const {
+  std::lock_guard<std::mutex> lock(failureMutex_);
+  return failureReason_;
+}
+
+void MacPlatformHook::SetFailureReason(std::string reason) {
+  std::lock_guard<std::mutex> lock(failureMutex_);
+  failureReason_ = std::move(reason);
 }
 
 }  // namespace mac

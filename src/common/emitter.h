@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <functional>
 #include <memory>
 
@@ -21,6 +22,7 @@ class InputEmitter {
 
   bool Start();
   void Stop();
+  std::string GetFailureReason() const;
 
  private:
   std::unique_ptr<PlatformHook> platformHook_;
@@ -38,8 +40,9 @@ class PlatformHook {
 
   virtual bool Start() = 0;
   virtual void Stop() = 0;
+  virtual std::string GetFailureReason() const;
 
- protected:
+protected:
   void Dispatch(InputEvent event);
 
  private:

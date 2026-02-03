@@ -1,3 +1,4 @@
+#include <string>
 #include <utility>
 
 #include "emitter.h"
@@ -16,6 +17,10 @@ PlatformHook::PlatformHook(EventCallback callback)
     : callback_(std::move(callback)) {}
 
 PlatformHook::~PlatformHook() = default;
+
+std::string PlatformHook::GetFailureReason() const {
+  return {};
+}
 
 void PlatformHook::Dispatch(InputEvent event) {
   if (callback_) {
@@ -47,6 +52,10 @@ void InputEmitter::Stop() {
   if (platformHook_) {
     platformHook_->Stop();
   }
+}
+
+std::string InputEmitter::GetFailureReason() const {
+  return platformHook_ ? platformHook_->GetFailureReason() : std::string();
 }
 
 } // namespace inputhook
