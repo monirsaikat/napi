@@ -1,13 +1,16 @@
 #import "hook_mac.h"
 
 #import <ApplicationServices/ApplicationServices.h>
-#import <Foundation/Foundation.h>
 
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <limits.h>
+#include <mach-o/dyld.h>
 #include <optional>
+#include <unistd.h>
+#include <vector>
 
 namespace inputhook {
 namespace platform {
@@ -116,16 +119,22 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
 }
 
 std::string BuildProcessPath() {
-  @autoreleasepool {
-    NSURL* executableURL = [[NSProcessInfo processInfo] executableURL];
-    if (executableURL) {
-      const char* path = executableURL.fileSystemRepresentation;
-      if (path) {
-        return std::string(path);
-      }
-    }
+  uint32_t size = 0;
+  if (_NSGetExecutablePath(nullptr, &size) != -1 || size == 0) {
+    return "this process";
   }
-  return "this process";
+
+  std::vector<char> buffer(size, '\0');
+  if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
+    return "this process";
+  }
+
+  char resolved[PATH_MAX];
+  if (realpath(buffer.data(), resolved)) {
+    return std::string(resolved);
+  }
+
+  return std::string(buffer.data());
 }
 
 CGEventMask BuildEventMask() {
