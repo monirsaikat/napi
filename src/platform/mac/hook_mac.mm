@@ -116,11 +116,13 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
 }
 
 std::string BuildProcessPath() {
-  NSURL* executableURL = [[NSProcessInfo processInfo] executableURL];
-  if (executableURL) {
-    const char* path = executableURL.fileSystemRepresentation;
-    if (path) {
-      return std::string(path);
+  @autoreleasepool {
+    NSURL* executableURL = [[NSProcessInfo processInfo] executableURL];
+    if (executableURL) {
+      const char* path = executableURL.fileSystemRepresentation;
+      if (path) {
+        return std::string(path);
+      }
     }
   }
   return "this process";
@@ -165,6 +167,10 @@ CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
                                            void* userInfo) {
   auto* self = reinterpret_cast<MacPlatformHook*>(userInfo);
   if (!self || !event) {
+    return event;
+  }
+
+  if (!self->running_.load(std::memory_order_acquire)) {
     return event;
   }
 
@@ -272,7 +278,7 @@ bool MacPlatformHook::EnsurePermissions() {
     if (!CGPreflightListenEventAccess()) {
       CGRequestListenEventAccess();
       std::string message = "Input Monitoring permission required for " +
-                            BuildProcessPath() +
+                            (processPath_.empty() ? BuildProcessPath() : processPath_) +
                             ". Enable it in System Settings > Privacy & Security > "
                             "Input Monitoring and restart the binary.";
       SetFailureReason(message);
@@ -297,7 +303,7 @@ bool MacPlatformHook::EnsurePermissions() {
   }
   if (!trusted) {
     std::string message = "Accessibility permission required for " +
-                          BuildProcessPath() +
+                          (processPath_.empty() ? BuildProcessPath() : processPath_) +
                           ". Grant it under Privacy & Security > Accessibility.";
     SetFailureReason(message);
     SetLastError(message);
@@ -309,55 +315,57 @@ bool MacPlatformHook::EnsurePermissions() {
 }
 
 void MacPlatformHook::RunLoopThread() {
-  runLoop_ = CFRunLoopGetCurrent();
-  CGEventMask mask = BuildEventMask();
+  @autoreleasepool {
+    runLoop_ = CFRunLoopGetCurrent();
+    CGEventMask mask = BuildEventMask();
 
-  if (!CreateEventTapSequence(mask)) {
-    std::string message = "Unable to create a CGEventTap; ensure Input Monitoring "
-                          "or Accessibility permissions are granted for " +
-                          BuildProcessPath() + ".";
-    SetFailureReason(message);
-    SetLastError(message);
-    running_ = false;
-    NotifyStartResult(false);
-    return;
-  }
+    if (!CreateEventTapSequence(mask)) {
+      std::string message = "Unable to create a CGEventTap; ensure Input Monitoring "
+                            "or Accessibility permissions are granted for " +
+                            (processPath_.empty() ? BuildProcessPath() : processPath_) + ".";
+      SetFailureReason(message);
+      SetLastError(message);
+      running_ = false;
+      NotifyStartResult(false);
+      return;
+    }
 
-  SetFailureReason("");
-  NotifyStartResult(true);
+    SetFailureReason("");
+    NotifyStartResult(true);
 
-  if (runLoopSource_) {
-    CFRunLoopAddSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
-  }
-  if (eventTap_) {
-    CGEventTapEnable(eventTap_, true);
-  }
+    if (runLoopSource_) {
+      CFRunLoopAddSource(runLoop_, runLoopSource_, kCFRunLoopCommonModes);
+    }
+    if (eventTap_) {
+      CGEventTapEnable(eventTap_, true);
+    }
 
-  lastRecreateMs_.store(NowSteadyMs(), std::memory_order_release);
+    lastRecreateMs_.store(NowSteadyMs(), std::memory_order_release);
 
-  while (running_) {
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
+    while (running_) {
+      CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, true);
 
-    int64_t now = NowSteadyMs();
-    int64_t lastEvent = lastEventMs_.load(std::memory_order_acquire);
-    int64_t lastRecreate = lastRecreateMs_.load(std::memory_order_acquire);
-    int64_t sinceEvent = now - lastEvent;
-    int64_t sinceRecreate = now - lastRecreate;
-    bool seen = eventSeen_.load(std::memory_order_acquire);
+      int64_t now = NowSteadyMs();
+      int64_t lastEvent = lastEventMs_.load(std::memory_order_acquire);
+      int64_t lastRecreate = lastRecreateMs_.load(std::memory_order_acquire);
+      int64_t sinceEvent = now - lastEvent;
+      int64_t sinceRecreate = now - lastRecreate;
+      bool seen = eventSeen_.load(std::memory_order_acquire);
 
-    if (sinceRecreate >= kMinRecreateIntervalMs) {
-      if (!seen && sinceEvent >= kInitialNoEventMs) {
-        lastRecreateMs_.store(now, std::memory_order_release);
-        RecreateEventTap("no events after start");
-      } else if (seen && sinceEvent >= kWatchdogIntervalMs) {
-        lastRecreateMs_.store(now, std::memory_order_release);
-        RecreateEventTap("no events watchdog");
+      if (sinceRecreate >= kMinRecreateIntervalMs) {
+        if (!seen && sinceEvent >= kInitialNoEventMs) {
+          lastRecreateMs_.store(now, std::memory_order_release);
+          RecreateEventTap("no events after start");
+        } else if (seen && sinceEvent >= kWatchdogIntervalMs) {
+          lastRecreateMs_.store(now, std::memory_order_release);
+          RecreateEventTap("no events watchdog");
+        }
       }
     }
-  }
 
-  TeardownEventTap();
-  runLoop_ = nullptr;
+    TeardownEventTap();
+    runLoop_ = nullptr;
+  }
 }
 
 bool MacPlatformHook::Start() {
@@ -367,6 +375,7 @@ bool MacPlatformHook::Start() {
 
   SetFailureReason("");
   SetLastError("");
+  processPath_ = BuildProcessPath();
   if (!EnsurePermissions()) {
     return false;
   }

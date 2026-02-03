@@ -54,6 +54,7 @@ class MacPlatformHook : public PlatformHook {
   std::atomic<int64_t> lastEventMs_{0};
   std::atomic<int64_t> lastRecreateMs_{0};
   std::atomic<bool> eventSeen_{false};
+  std::string processPath_;
 
   void NotifyStartResult(bool success);
 };
