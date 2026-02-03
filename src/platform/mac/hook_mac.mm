@@ -70,7 +70,6 @@ std::optional<InputEvent> BuildEvent(CGEventType type, CGEventRef eventRef) {
 
   switch (type) {
     case kCGEventKeyDown:
-    case kCGEventFlagsChanged:
       event.type = "keydown";
       event.keycode = static_cast<uint32_t>(
           CGEventGetIntegerValueField(eventRef, kCGKeyboardEventKeycode));
@@ -238,6 +237,24 @@ CGEventRef MacPlatformHook::EventCallback(CGEventTapProxy proxy,
 
   self->lastEventMs_.store(NowSteadyMs(), std::memory_order_release);
   self->eventSeen_.store(true, std::memory_order_release);
+
+  if (type == kCGEventFlagsChanged) {
+    CGEventFlags flags = CGEventGetFlags(event);
+    CGEventFlags changed = flags ^ self->lastFlags_;
+    self->lastFlags_ = flags;
+    if (changed == 0) {
+      return event;
+    }
+
+    InputEvent modifierEvent;
+    modifierEvent.time = CurrentTimeMs();
+    modifierEvent.modifiers = ModifiersFromFlags(flags);
+    modifierEvent.keycode = static_cast<uint32_t>(
+        CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
+    modifierEvent.type = (flags & changed) ? "keydown" : "keyup";
+    self->Dispatch(std::move(modifierEvent));
+    return event;
+  }
 
   auto builtEvent = BuildEvent(type, event);
   if (builtEvent) {
